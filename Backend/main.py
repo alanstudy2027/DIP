@@ -1,157 +1,161 @@
 import os
-import re
 import json
 import tempfile
-import uuid
-from fastapi import FastAPI, UploadFile, File, Form
+import sqlite3
+import re
+from fastapi import FastAPI, UploadFile, File, Form, Body
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
-from supabase import create_client, Client
-
 from processor import DocumentProcessor, sanitize_for_json
 
 load_dotenv()
 
-# === FastAPI Init ===
+# === Initialize FastAPI ===
 app = FastAPI()
+
+# === Enable CORS (Next.js frontend can call this API) ===
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # TODO: restrict in prod
+    allow_origins=["*"],  # restrict later for production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# === Supabase Init ===
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise ValueError("❌ Supabase credentials missing in .env")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# === Processor Init (OCI LLM + Docling) ===
+# === Initialize OCI-powered DocumentProcessor ===
 processor = DocumentProcessor(config_file="config.ini", profile="DEFAULT")
 
+# === SQLite setup ===
+DB_PATH = "documents.db"
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+cur = conn.cursor()
 
+cur.execute("""
+CREATE TABLE IF NOT EXISTS documents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename TEXT,
+    file_type TEXT,
+    client_name TEXT,
+    language TEXT,
+    layout TEXT,       -- JSON array of columns
+    embedding TEXT,    -- JSON of embedding vector
+    user_prompt TEXT,  -- saved prompt if any
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+""")
+conn.commit()
+
+
+def get_file_type(filename):
+    """Extract file type from filename using regex (e.g. pdf, xlsx)."""
+    match = re.search(r'\.([^.]+)$', filename)
+    return match.group(1).lower() if match else None
+
+
+# === Upload + Process Document ===
 @app.post("/process-document/")
 async def process_document(file: UploadFile = File(...), schema_json: str = Form(...)):
-    """
-    Upload pipeline:
-    1. Accept file + schema JSON
-    2. Extract markdown + metadata
-    3. Structure markdown with LLM
-    4. Store layout embeddings in Supabase
-    5. Suggest prompt from Supabase (if exists)
-    """
     try:
         schema = json.loads(schema_json)
-        doc_id = str(uuid.uuid4()) # Generate a unique ID for the document
 
-        # Save file temporarily
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             tmp.write(await file.read())
             tmp_path = tmp.name
 
-        # Run pipeline in processor
         result = processor.process_document(tmp_path)
+        structured_markdown = result["structured_markdown"]
+        metadata = result["metadata"]
+        embedding = result["embedding"]
 
-        safe_metadata = sanitize_for_json(result["metadata"])
-        safe_markdown = sanitize_for_json(result["structured_markdown"])
+        generated_json = processor.extract_json_with_schema(structured_markdown, schema)
 
-        # Detect file type from filename
-        file_ext_match = re.search(r"\.([^.]+)$", file.filename)
-        file_ext = file_ext_match.group(1) if file_ext_match else ""
-        client_name = safe_metadata.get("customer_info")
-        layout_columns = list(schema.keys())
+        file_type = get_file_type(file.filename)
+        cur.execute(
+            """
+            INSERT INTO documents (filename, file_type, client_name, language, layout, embedding, user_prompt)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                file.filename,
+                file_type,
+                metadata["customer_info"],
+                metadata["language"],
+                json.dumps(metadata["layout"]),
+                json.dumps(embedding.tolist()),
+                None
+            ),
+        )
+        doc_id = cur.lastrowid
+        conn.commit()
 
-        # Create text to be embedded
-        embedding_text = f"ID: {doc_id}, Client: {client_name}, Columns: {', '.join(layout_columns)}"
-        
-        # Generate embedding
-        embedding = processor.embedder.encode(embedding_text).tolist()
-
-        # Store layout + embeddings in Supabase
-        supabase.table("documents").insert({
-            "id": doc_id,
-            "client_name": client_name,
-            "document_type": file_ext,
-            "language": safe_metadata.get("language"),
-            "layout": safe_metadata.get("layout"),
-            "semantics": embedding,
-             # Store the generated embedding
-        }).execute()
-
-        # Fetch suggested prompt for this layout
-        prompt_resp = supabase.table("prompts").select("prompt").eq("layout", safe_metadata.get("layout")).limit(1).execute()
-        suggested_prompt = prompt_resp.data[0]["prompt"] if prompt_resp.data else None
-
-        # Generate structured JSON (based on schema textarea input)
-        schema_prompt = f"""
-        Extract structured JSON according to this schema:
-        {json.dumps(schema, indent=2)}
-
-        Document Markdown:
-        {result["structured_markdown"]}
-        """
-        structured_json = processor.extract_json_with_schema(result["structured_markdown"], schema)
+        cur.execute(
+            "SELECT user_prompt FROM documents WHERE layout = ? AND user_prompt IS NOT NULL LIMIT 1",
+            (json.dumps(metadata["layout"]),)
+        )
+        row = cur.fetchone()
+        suggested_prompt = row[0] if row else None
 
         return {
             "status": "success",
+            "document_id": doc_id,
             "filename": file.filename,
-            "metadata": safe_metadata,
-            "structured_markdown": safe_markdown,
-            "generated_json": structured_json,
+            "structured_markdown": structured_markdown,
+            "generated_json": sanitize_for_json(generated_json),
             "suggested_prompt": suggested_prompt,
         }
 
     except json.JSONDecodeError:
-        return {"status": "error", "message": "Invalid schema JSON format"}
+        return {"status": "error", "message": "Invalid schema JSON format."}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
 
+# === Try Prompt (no save) ===
 @app.post("/try-prompt/")
-async def try_prompt(data: dict):
-    """
-    Try a user-supplied prompt without saving it.
-    """
-    prompt = data.get("prompt")
-    structured_markdown = data.get("structured_markdown")
-    if not prompt or not structured_markdown:
-        return {"status": "error", "message": "Missing prompt or markdown"}
-
+async def try_prompt(
+    document_id: int = Body(...),
+    user_prompt: str = Body(...),
+    schema_json: str = Body(...)
+):
     try:
-        final_prompt = f"""
-        Apply this prompt to the document:
+        schema = json.loads(schema_json)
 
-        Prompt:
-        {prompt}
+        cur.execute("SELECT layout, client_name FROM documents WHERE id=?", (document_id,))
+        row = cur.fetchone()
+        if not row:
+            return {"status": "error", "message": "Document not found"}
+        layout, client_name = row
 
-        Document:
-        {structured_markdown}
+        custom_prompt = f"""
+        Client: {client_name}
+        Layout: {layout}
+        Instruction: {user_prompt}
+
+        Extract data into JSON with this schema:
+        {json.dumps(schema, indent=2)}
         """
-        response = processor._call_oci_llm(final_prompt)
-        return {"status": "success", "result": response}
+        raw_json = processor._call_oci_llm(custom_prompt)
+
+        try:
+            parsed_json = json.loads(raw_json)
+        except:
+            parsed_json = {"error": "Failed to parse JSON", "raw": raw_json}
+
+        return {"status": "success", "generated_json": sanitize_for_json(parsed_json)}
+
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
 
+# === Save Prompt (persist) ===
 @app.post("/save-prompt/")
-async def save_prompt(data: dict):
-    """
-    Save a new prompt tied to a layout into Supabase.
-    """
-    layout = data.get("layout")
-    prompt = data.get("prompt")
-
-    if not layout or not prompt:
-        return {"status": "error", "message": "Missing layout or prompt"}
-
+async def save_prompt(
+    document_id: int = Body(...),
+    user_prompt: str = Body(...)
+):
     try:
-        supabase.table("prompts").insert({
-            "layout": layout,
-            "prompt": prompt,
-        }).execute()
-        return {"status": "success", "message": "Prompt saved"}
+        cur.execute("UPDATE documents SET user_prompt=? WHERE id=?", (user_prompt, document_id))
+        conn.commit()
+        return {"status": "success", "message": "Prompt saved!"}
     except Exception as e:
         return {"status": "error", "message": str(e)}

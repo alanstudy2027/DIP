@@ -3,10 +3,9 @@ import re
 import json
 import math
 from pathlib import Path
-from typing import Dict, Any, Tuple, List
+from typing import Dict, Any, Tuple
 
 import oci
-import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from docling.document_converter import DocumentConverter
@@ -52,41 +51,30 @@ class DocumentProcessor:
             config=self.config,
             service_endpoint=self.endpoint,
             retry_strategy=oci.retry.NoneRetryStrategy(),
-            timeout=(10, 240),
+            timeout=(10, 240)
         )
 
         # Docling converter
         self.converter = DocumentConverter()
 
-        # Embedding model (MiniLM = 384 dims)
+        # Embedding model
         self.embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
-        # FAISS index (L2 distance)
-        self.index = faiss.IndexFlatL2(384)
-        self.index_metadata: List[Dict[str, Any]] = []
-
-    # -------------------------------
-    # DOC CONVERSION
-    # -------------------------------
     def extract_with_docling(self, file_path: str) -> Tuple[str, Dict[str, Any]]:
         """
-        Convert file → Markdown and extract metadata.
+        Convert file → Markdown and extract basic metadata.
         """
         try:
             conv_result = self.converter.convert(file_path)
             markdown = conv_result.document.export_to_markdown()
             metadata = {
                 "file_type": os.path.splitext(file_path)[-1].lstrip("."),
-                "layout": getattr(conv_result, "layout_type", "Unknown"),
                 "language": getattr(conv_result, "language", "Unknown"),
             }
             return markdown, metadata
         except Exception as e:
             raise RuntimeError(f"Docling extraction failed: {e}")
 
-    # -------------------------------
-    # OCI LLM CALL
-    # -------------------------------
     def _call_oci_llm(self, prompt: str) -> str:
         """Helper to call OCI Generative AI with a text prompt."""
         content = oci.generative_ai_inference.models.TextContent()
@@ -112,7 +100,6 @@ class DocumentProcessor:
 
         response = self.client.chat(chat_detail)
 
-        # Extract first text response
         if hasattr(response.data, "chat_response") and response.data.chat_response.choices:
             choice = response.data.chat_response.choices[0]
             if choice.message.content:
@@ -121,147 +108,113 @@ class DocumentProcessor:
                         return item.text.strip()
         raise RuntimeError("No valid response from OCI LLM")
 
-    # -------------------------------
-    # STRUCTURED JSON EXTRACTION
-    # -------------------------------
-    def extract_json_with_schema(self, markdown: str, schema: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Use OCI LLM to extract structured JSON according to a schema.
-        """
-        schema_str = json.dumps(schema, indent=2)
-        prompt = f"""
-        You are a JSON extraction assistant.
-        Extract structured data from the following Markdown content.
-        Match this JSON schema exactly. 
-        If any field cannot be found, return "NaN".
-
-        --- Document (Markdown) ---
-        {markdown}
-
-        --- Schema ---
-        {schema_str}
-
-        Return ONLY valid JSON that follows the schema.
-        """
-        raw = self._call_oci_llm(prompt)
-
-        try:
-            extracted = json.loads(raw)
-        except Exception:
-            # fallback → map schema keys with NaN
-            extracted = {key: "NaN" for key in schema.keys()}
-
-        # ensure all schema keys present
-        validated = {key: extracted.get(key, "NaN") for key in schema.keys()}
-        return validated
-
-    # -------------------------------
-    # PIPELINE
-    # -------------------------------
     def process_document(self, file_path: str) -> Dict[str, Any]:
         """
         Full pipeline:
         1. Convert file → Markdown
-        2. Use LLM to structure Markdown
-        3. Extract metadata (file_type, language, customer_info, layout, semantics)
-        4. Store embeddings in FAISS with client name tag
+        2. Structure Markdown with LLM
+        3. Extract metadata (file_type, language, layout, client_name)
+        4. Create embedding (layout + client_name)
+        5. Return structured_markdown, metadata, embedding
         """
-        # Step 1: Extract markdown with Docling
+        # Step 1: Markdown
         markdown, doc_metadata = self.extract_with_docling(file_path)
 
-        # Step 2: LLM - Structure markdown
+        # Step 2: Structure Markdown
         struct_prompt = f"""
-    Clean and structure the following Markdown content into a readable, consistent format.
-    
-    ✅ Rules for tables:
-    - Every table must have a valid header row.
-    - Immediately below the header, add a separator row with the same number of columns (use ---).
-    - Each row must have the exact same number of cells as the header.
-    - Do NOT add extra or trailing pipes at the beginning or end of lines.
-    - Preserve headings and bullet points outside of tables.
+        You are a document formatter.
+Your job is to rewrite the given Markdown content into a clean, standardized format.
 
-    --- Markdown ---
-    {markdown}
-    """
+Rules:
+- Use GitHub-Flavored Markdown (GFM).
+- Preserve ALL information (headings, tables, bullet points).
+- Tables MUST be perfectly aligned with headers and separators.
+- Always include a header row for tables.
+- Do NOT invent new values, only clean formatting.
+- Avoid wrapping tables inside code blocks (```).
 
+Document content:
+{markdown}
+
+        """
         structured_markdown = self._call_oci_llm(struct_prompt)
 
-        # Step 3: Metadata extraction
+        # Step 3: Metadata extraction (layout + client_name)
         filename = os.path.basename(file_path)
-        customer_name = re.sub(r"\..*$", "", filename)  # filename without extension
 
         meta_prompt = f"""
-        You are an assistant extracting document metadata.
-        Given this filename "{filename}" and markdown content, return a JSON with:
-        - language (string)
-        - customer_info (string, inferred from filename or content)
-        - semantics (string: short description of document purpose/meaning)
-        - layout (string: one of [table-heavy, form-like, narrative, mixed])
+        You are a metadata extractor.
 
-        Markdown content:
-        {markdown}
+Given the document filename and Markdown content, return ONLY a JSON object with the following fields:
+
+{{
+  "file_type": "<file extension from filename, e.g. pdf, xlsx, docx>",
+  "language": "<document language>",
+  "client_name": "<company or client name>",
+  "layout": ["<column1>", "<column2>", "<column3>", ...]
+}}
+
+Rules:
+- file_type MUST be derived from the filename extension only (lowercase, no dot).
+- Detect client_name from filename OR from document header (company name, client name, etc.).
+- "layout" must be an array of column headers from the MAIN tabular section of the document. If no tables, return [].
+- Return ONLY valid JSON, no explanations.
+
+Filename: {filename}
+
+Markdown:
+{markdown}
         """
         raw_meta = self._call_oci_llm(meta_prompt)
 
         try:
             meta_json = json.loads(raw_meta)
-        except Exception:
-            # fallback metadata
+        except:
             meta_json = {
                 "file_type": doc_metadata.get("file_type", "NaN"),
                 "language": doc_metadata.get("language", "NaN"),
-                "layout": doc_metadata.get("layout", "NaN"),
-                "semantics": "NaN",
-                "customer_info": customer_name,
+                "layout": [],
+                "client_name": re.sub(r"\..*$", "", filename),
             }
 
         # Normalize metadata
         normalized_meta = {
+            "file_type": meta_json.get("file_type", doc_metadata.get("file_type", "NaN")),
             "language": meta_json.get("language", doc_metadata.get("language", "NaN")),
-            "layout": meta_json.get("layout", doc_metadata.get("layout", "NaN")),
-            "semantics": meta_json.get("semantics", "NaN"),
-            "customer_info": meta_json.get("customer_info", customer_name),
+            # always store layout as JSON string
+            "layout": json.dumps(meta_json.get("layout", [])),
+            "customer_info": meta_json.get("client_name", re.sub(r"\..*$", "", filename)),
         }
 
-        # Step 4: FAISS (if needed for local search)
-        embedding = self.embedder.encode(structured_markdown)
-        embedding = np.array([embedding], dtype="float32")
-        self.index.add(embedding)
-        self.index_metadata.append({
-            "client_name": normalized_meta["customer_info"],
-            "layout": normalized_meta["layout"],
-            "file_path": filename,
-        })
+        # Step 4: Embedding
+        embed_text = f"Layout: {normalized_meta['layout']}, Client: {normalized_meta['customer_info']}"
+        embedding = self.embedder.encode(embed_text)
+        embedding = np.array(embedding, dtype="float32")
 
-        # Step 5: Return results
+        # Step 5: Return
         return {
             "structured_markdown": structured_markdown,
             "metadata": normalized_meta,
-            "faiss_index_size": self.index.ntotal,
+            "embedding": embedding,
         }
 
-    # -------------------------------
-    # SEARCH
-    # -------------------------------
-    def search(self, query: str, top_k: int = 3) -> List[Dict[str, Any]]:
+    def extract_json_with_schema(self, structured_markdown: str, schema: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Search FAISS index for most relevant documents.
+        Apply schema to structured markdown and return JSON.
         """
-        if self.index.ntotal == 0:
-            return []
+        schema_prompt = f"""
+        Extract structured data from the following document into JSON.
+        The JSON must strictly follow this schema:
 
-        query_vec = self.embedder.encode(query)
-        query_vec = np.array([query_vec], dtype="float32")
+        Schema:
+        {json.dumps(schema, indent=2)}
 
-        distances, indices = self.index.search(query_vec, top_k)
-        results = []
-        for i, idx in enumerate(indices[0]):
-            if idx == -1:
-                continue
-            metadata = self.index_metadata[idx]
-            results.append({
-                "rank": i + 1,
-                "distance": float(distances[0][i]),
-                "metadata": metadata,
-            })
-        return results
+        Document:
+        {structured_markdown}
+        """
+        raw_json = self._call_oci_llm(schema_prompt)
+
+        try:
+            return json.loads(raw_json)
+        except:
+            return {"error": "Failed to parse JSON", "raw": raw_json}
