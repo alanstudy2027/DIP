@@ -38,13 +38,11 @@ CREATE TABLE IF NOT EXISTS documents (
     client_name TEXT,
     language TEXT,
     layout TEXT,       -- JSON array of columns
-    embedding TEXT,    -- JSON of embedding vector
     user_prompt TEXT,  -- saved prompt if any
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )
 """)
 conn.commit()
-
 
 def get_file_type(filename):
     """Extract file type from filename using regex (e.g. pdf, xlsx)."""
@@ -65,15 +63,27 @@ async def process_document(file: UploadFile = File(...), schema_json: str = Form
         result = processor.process_document(tmp_path)
         structured_markdown = result["structured_markdown"]
         metadata = result["metadata"]
-        embedding = result["embedding"]
+        # embedding = result["embedding"]
 
-        generated_json = processor.extract_json_with_schema(structured_markdown, schema)
+        # Get suggested prompt before extraction
+        suggested_prompt = processor.find_suggested_prompt(
+            current_client=metadata["customer_info"],
+            current_layout=metadata["layout"],
+            cursor=cur
+        )
+
+        # Use suggested prompt in extraction
+        generated_json = processor.extract_json_with_schema(
+            structured_markdown, 
+            schema, 
+            suggested_prompt
+        )
 
         file_type = get_file_type(file.filename)
         cur.execute(
             """
-            INSERT INTO documents (filename, file_type, client_name, language, layout, embedding, user_prompt)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO documents (filename, file_type, client_name, language, layout, user_prompt)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 file.filename,
@@ -81,19 +91,12 @@ async def process_document(file: UploadFile = File(...), schema_json: str = Form
                 metadata["customer_info"],
                 metadata["language"],
                 json.dumps(metadata["layout"]),
-                json.dumps(embedding.tolist()),
+                # json.dumps(embedding.tolist()),
                 None
             ),
         )
         doc_id = cur.lastrowid
         conn.commit()
-
-        cur.execute(
-            "SELECT user_prompt FROM documents WHERE layout = ? AND user_prompt IS NOT NULL LIMIT 1",
-            (json.dumps(metadata["layout"]),)
-        )
-        row = cur.fetchone()
-        suggested_prompt = row[0] if row else None
 
         return {
             "status": "success",
@@ -113,24 +116,16 @@ async def process_document(file: UploadFile = File(...), schema_json: str = Form
 # === Try Prompt (no save) ===
 @app.post("/try-prompt/")
 async def try_prompt(
-    document_id: int = Body(...),
+    document: str = Body(...),
     user_prompt: str = Body(...),
     schema_json: str = Body(...)
 ):
     try:
         schema = json.loads(schema_json)
 
-        cur.execute("SELECT layout, client_name FROM documents WHERE id=?", (document_id,))
-        row = cur.fetchone()
-        if not row:
-            return {"status": "error", "message": "Document not found"}
-        layout, client_name = row
-
         custom_prompt = f"""
-        Client: {client_name}
-        Layout: {layout}
         Instruction: {user_prompt}
-
+        Document: {document}
         Extract data into JSON with this schema:
         {json.dumps(schema, indent=2)}
         """

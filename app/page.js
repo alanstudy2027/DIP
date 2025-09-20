@@ -4,7 +4,7 @@ import axios from "axios";
 import ReactMarkdown from "react-markdown";
 
 function PDFChatInterface() {
-  const [schemaJson, setSchemaJson] = useState("");
+  const [schemaJson, setSchemaJson] = useState(JSON.stringify({ company_name: "",email:"",address:"",phone_number:"",date:"" }, null, 2));
   const [description, setDescription] = useState(""); // structured markdown
   const [outputJson, setOutputJson] = useState(null); // JSON extracted using schema
   const [inputPrompt, setInputPrompt] = useState(""); // user-entered prompt
@@ -80,7 +80,7 @@ function PDFChatInterface() {
     if (!inputPrompt.trim() || !documentId) return;
     try {
       const res = await axios.post("http://localhost:8000/try-prompt/", {
-        document_id: documentId, // ✅ send doc id
+        document: description, // ✅ send doc id
         user_prompt: inputPrompt,
         schema_json: schemaJson,
       });
@@ -178,11 +178,11 @@ function PDFChatInterface() {
 
           {/* Chat */}
           <div className="bg-white rounded-2xl shadow-lg p-6 flex flex-col">
-            <h2 className="text-xl font-semibold mb-4">Chat</h2>
+            <h2 className="text-xl font-semibold mb-4">Sub Prompt Window</h2>
             {suggestedPrompt ? (
               <div className="space-y-3">
                 <p className="text-sm text-gray-700">
-                  Suggested Prompt: <em>{suggestedPrompt}</em>
+                  Sub Prompt used: <em>{suggestedPrompt}</em>
                 </p>
                 <textarea
                   value={inputPrompt}

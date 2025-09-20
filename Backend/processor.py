@@ -58,7 +58,7 @@ class DocumentProcessor:
         self.converter = DocumentConverter()
 
         # Embedding model
-        self.embedder = SentenceTransformer("all-MiniLM-L6-v2")
+        # self.embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
     def extract_with_docling(self, file_path: str) -> Tuple[str, Dict[str, Any]]:
         """
@@ -186,35 +186,115 @@ Markdown:
             "customer_info": meta_json.get("client_name", re.sub(r"\..*$", "", filename)),
         }
 
-        # Step 4: Embedding
-        embed_text = f"Layout: {normalized_meta['layout']}, Client: {normalized_meta['customer_info']}"
-        embedding = self.embedder.encode(embed_text)
-        embedding = np.array(embedding, dtype="float32")
+        # # Step 4: Embedding
+        # embed_text = f"Layout: {normalized_meta['layout']}, Client: {normalized_meta['customer_info']}"
+        # embedding = self.embedder.encode(embed_text)
+        # embedding = np.array(embedding, dtype="float32")
 
         # Step 5: Return
         return {
             "structured_markdown": structured_markdown,
             "metadata": normalized_meta,
-            "embedding": embedding,
+            # "embedding": embedding,
         }
 
-    def extract_json_with_schema(self, structured_markdown: str, schema: Dict[str, Any]) -> Dict[str, Any]:
+    def extract_json_with_schema(self, structured_markdown: str, schema: Dict[str, Any], suggested_prompt: str = None) -> Dict[str, Any]:
         """
         Apply schema to structured markdown and return JSON.
+        Uses suggested prompt if available for better extraction.
         """
-        schema_prompt = f"""
-        Extract structured data from the following document into JSON.
+        if suggested_prompt:
+            # Use the suggested prompt with schema
+            schema_prompt = f"""
+        {suggested_prompt}
         The JSON must strictly follow this schema:
-
-        Schema:
         {json.dumps(schema, indent=2)}
 
         Document:
         {structured_markdown}
         """
+        else:
+            # Default prompt if no suggested prompt available
+            schema_prompt = f"""
+        Extract structured data from the following document into JSON.
+        
+        The JSON must strictly follow this schema:
+
+        Schema:
+
+        {json.dumps(schema, indent=2)}
+
+        Document:
+        {structured_markdown}
+        Important Note: For this field : MMXML S3 MGC POTIONS TRUCK give null.
+        """
+        
         raw_json = self._call_oci_llm(schema_prompt)
 
         try:
             return json.loads(raw_json)
         except:
             return {"error": "Failed to parse JSON", "raw": raw_json}
+
+    def find_suggested_prompt(self, current_client: str, current_layout: str, cursor) -> str:
+        """
+        Find suggested prompt by:
+        1. First checking for exact client name match
+        2. Then using LLM to compare layouts for similarity
+        """
+        # Step 1: Check for exact client name match first
+        cursor.execute(
+            "SELECT user_prompt FROM documents WHERE client_name = ? AND user_prompt IS NOT NULL LIMIT 1",
+            (current_client,)
+        )
+        row = cursor.fetchone()
+        if row:
+            return row[0]
+        
+        # Step 2: Get all documents with saved prompts for layout comparison
+        cursor.execute(
+            "SELECT client_name, layout, user_prompt FROM documents WHERE user_prompt IS NOT NULL"
+        )
+        candidates = cursor.fetchall()
+        
+        if not candidates:
+            return None
+            
+        # Step 3: Use LLM to find the most similar layout
+        current_layout_parsed = json.loads(current_layout) if isinstance(current_layout, str) else current_layout
+        
+        best_prompt = None
+        best_similarity_score = 0
+        
+        for candidate_client, candidate_layout, candidate_prompt in candidates:
+            try:
+                candidate_layout_parsed = json.loads(candidate_layout) if isinstance(candidate_layout, str) else candidate_layout
+                
+                # Use LLM to compare layouts
+                comparison_prompt = f"""
+                Compare these two document layouts and return a similarity score from 0 to 100.
+                Consider column names, data types, and overall structure.
+                Return ONLY a number between 0-100, no explanations.
+                
+                Layout 1: {json.dumps(current_layout_parsed)}
+                Layout 2: {json.dumps(candidate_layout_parsed)}
+                
+                Similarity score (0-100):
+                """
+                
+                score_text = self._call_oci_llm(comparison_prompt)
+                
+                # Extract numeric score
+                import re
+                score_match = re.search(r'\b(\d+(?:\.\d+)?)\b', score_text)
+                if score_match:
+                    similarity_score = float(score_match.group(1))
+                    if similarity_score > best_similarity_score and similarity_score >= 70:  # Threshold for similarity
+                        best_similarity_score = similarity_score
+                        best_prompt = candidate_prompt
+                        
+            except Exception as e:
+                # Skip this candidate if there's an error
+                continue
+                
+        return best_prompt
