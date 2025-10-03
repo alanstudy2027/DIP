@@ -56,6 +56,8 @@ def get_file_type(filename):
 async def process_document(file: UploadFile = File(...), schema_json: str = Form(...)):
     try:
         schema = json.loads(schema_json)
+        # Add FileName to schema
+        schema["FileName"] = ""
 
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             tmp.write(await file.read())
@@ -79,6 +81,8 @@ async def process_document(file: UploadFile = File(...), schema_json: str = Form
             schema,
             suggested_prompt
         )
+        # Add filename to generated JSON
+        generated_json["FileName"] = file.filename
 
         # Store document in SQLite
         file_type = get_file_type(file.filename)
@@ -98,6 +102,7 @@ async def process_document(file: UploadFile = File(...), schema_json: str = Form
         )
         doc_id = cur.lastrowid
         conn.commit()
+        print(generated_json)
 
         return {
             "status": "success",
@@ -117,6 +122,8 @@ async def process_document(file: UploadFile = File(...), schema_json: str = Form
 async def process_document(file: UploadFile = File(...), schema_json: str = Form(...)):
     try:
         schema = json.loads(schema_json)
+        # Add FileName to schema
+        schema["FileName"] = ""
 
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             tmp.write(await file.read())
@@ -150,6 +157,8 @@ async def process_document(file: UploadFile = File(...), schema_json: str = Form
             schema,
             suggested_prompt
         )
+        # Add filename to generated JSON
+        generated_json["FileName"] = file.filename
 
         # Store document in SQLite
         file_type = get_file_type(file.filename)

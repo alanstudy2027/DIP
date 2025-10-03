@@ -1,4 +1,4 @@
-{
+[{
   "company_name": "",
   "email": "",
   "address": "",
@@ -6,4 +6,4 @@
   "date": "",
   "language": "",
   "items":{"item_name":"quantity"}
-}
+}]

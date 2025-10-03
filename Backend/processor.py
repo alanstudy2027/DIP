@@ -4,7 +4,6 @@ import json
 import math
 from pathlib import Path
 from typing import Dict, Any, Tuple
-
 import oci
 from docling.document_converter import DocumentConverter
 
@@ -26,13 +25,10 @@ def sanitize_for_json(data):
         except Exception:
             return str(data)
 
-
 def get_file_type(filename: str) -> str:
     """Extract file type (extension) using regex, e.g., pdf, xlsx, docx."""
     match = re.search(r'\.([^.]+)$', filename)
     return match.group(1).lower() if match else "unknown"
-
-
 class DocumentProcessor:
     def __init__(self, config_file: str = "config.ini", profile: str = "DEFAULT"):
         """
@@ -86,7 +82,7 @@ class DocumentProcessor:
         chat_request = oci.generative_ai_inference.models.GenericChatRequest()
         chat_request.api_format = oci.generative_ai_inference.models.BaseChatRequest.API_FORMAT_GENERIC
         chat_request.messages = [message]
-        chat_request.max_tokens = 4000
+        chat_request.max_tokens = 2000
         chat_request.temperature = 0
         chat_request.top_p = 1
         chat_request.top_k = 0
@@ -168,33 +164,148 @@ class DocumentProcessor:
         Apply schema to structured markdown and return JSON.
         If suggested_prompt is available, apply it along with the base schema extraction.
         """
+        # Create a sample JSON with empty values based on schema
+        sample_json = {}
+        for key in schema:
+            sample_json[key] = ""
+            
         if suggested_prompt:
             schema_prompt = f"""
-        Use the following instruction to improve extraction: "{suggested_prompt}"
+    You are a document data extraction expert.
+    
+    Use the following instruction to improve extraction: "{suggested_prompt}"
 
-        Extract structured data from the document into JSON that strictly follows this schema:
-        {json.dumps(schema, indent=2)}
+    Extract structured data from the document into JSON that EXACTLY follows this schema:
+    {json.dumps(schema, indent=2)}
+    
+    Expected output format:
+    {json.dumps(sample_json, indent=2)}
 
-        Document:
-        {structured_markdown}
-        """
+    Pay special attention to the Language field. It should be the primary language 
+    used in the document content. Use ISO language codes (e.g., 'en' for English, 
+    'es' for Spanish, etc.) if possible.
+
+    Special Instructions for OrderDetailNotes field:
+    1. Extract Order Information such as:
+       - Order Information
+       - Order type
+       - Special handling instructions
+       - Priority level
+       - Order status
+       - Customer requirements
+       - Urgent
+    2. Format as key-value pairs
+    3. If no order information found, return empty string ("")
+
+    Special Instructions for DeliveryDate field:
+    1. First, look for explicit delivery date in the document
+    2. If delivery date not found, use Cargo Ready Date
+    3. If cargo ready date not found, use preparation date
+    4. If no date is found, return null
+    5. Maintain date format as found in document
+
+    Special Instructions for OrderDetailNotes field:
+    1. DO NOT summarize the document
+    2. ONLY extract urgent/important notes like "urgent delivery", "handle with care", etc.
+    3. If no urgent/important notes found, return empty string ("")
+
+    Special Instructions for UnitOfMeasure field:
+    1. Look for standard units of measurement (e.g., "pcs", "kg", "lbs", "m", "ft", "each", "box", "set", "ea")
+    2. Convert common variations to standard format:
+        - pieces/piece → "pcs"
+        - kilograms/kilo → "kg"
+        - pounds → "lbs"
+        - meters → "m"
+        - feet → "ft"
+        - boxes → "box"
+        - sets → "set"
+    3. If no unit found, return empty string ("")
+    4. Maintain case sensitivity as shown in examples
+
+    Document:
+    {structured_markdown}
+    
+    Return ONLY the JSON object with no additional text, explanations, or markdown formatting.
+    """
         else:
             schema_prompt = f"""
-        Extract structured data from the following document into JSON.
-        The JSON must strictly follow this schema:
-        {json.dumps(schema, indent=2)}
+    You are a document data extraction expert.
+    
+    Extract structured data from the following document into JSON.
+    The JSON must EXACTLY follow this schema with these exact field names:
+    {json.dumps(schema, indent=2)}
+    
+    Expected output format:
+    {json.dumps(sample_json, indent=2)}
 
-        Document:
-        {structured_markdown}
-        Important Note: if the JSON has items:quantity, then ignore it and give it as null
-        """
+    Pay special attention to the Language field. It should be the primary language 
+    used in the document content. Use ISO language codes (e.g., 'en' for English, 
+    'es' for Spanish, etc.) if possible.
+
+    Special Instructions for OrderDetailNotes field:
+    1. Extract Order Information such as:
+       - Order Information
+       - Order type
+       - Special handling instructions
+       - Priority level
+       - Order status
+       - Customer requirements
+       - Urgent
+    2. Format as key-value pairs
+    3. If no order information found, return empty string ("")
+
+    Special Instructions for DeliveryDate field:
+    1. First, look for explicit delivery date in the document
+    2. If delivery date not found, use Cargo Ready Date
+    3. If cargo ready date not found, use preparation date
+    4. If no date is found, return null
+    5. Maintain date format as found in document
+
+    Special Instructions for OrderDetailNotes field:
+    1. DO NOT provide a summary of the document
+    2. ONLY extract urgent or important notes (e.g., "urgent delivery", "priority shipment", "handle with care")
+    3. If no urgent/important notes are found, return empty string ("")
+    4. Focus on actionable or critical information only
+
+    Special Instructions for UnitOfMeasure field:
+    1. Look for standard units of measurement (e.g., "pcs", "kg", "lbs", "m", "ft", "each", "box", "set")
+    2. Convert common variations to standard format:
+        - pieces/piece → "pcs"
+        - kilograms/kilo → "kg"
+        - pounds → "lbs"
+        - meters → "m"
+        - feet → "ft"
+        - boxes → "box"
+        - sets → "set"
+    3. If no unit found, return empty string ("")
+    4. Maintain case sensitivity as shown in examples
+
+    Document:
+    {structured_markdown}
+    
+    Return ONLY the JSON object with no additional text, explanations, or markdown formatting.
+    If you cannot find a value for a field, leave it as an empty string.
+    """
 
         raw_json = self._call_oci_llm(schema_prompt)
 
         try:
-            return json.loads(raw_json)
-        except:
-            return {"error": "Failed to parse JSON", "raw": raw_json}
+            # Clean the response to ensure it's valid JSON
+            cleaned_json = raw_json.strip()
+            # Remove any markdown code block indicators
+            cleaned_json = re.sub(r'^```json\s*', '', cleaned_json)
+            cleaned_json = re.sub(r'\s*```$', '', cleaned_json)
+            
+            parsed_json = json.loads(cleaned_json)
+            
+            # Ensure all schema keys are present
+            for key in schema:
+                if key not in parsed_json:
+                    parsed_json[key] = ""
+                    
+            return parsed_json
+        except Exception as e:
+            return {"error": f"Failed to parse JSON: {str(e)}", "raw": raw_json}
 
     def find_suggested_prompt(self, current_client: str, current_layout: str, cursor) -> str:
         """
@@ -256,5 +367,4 @@ class DocumentProcessor:
             except Exception as e:
                 # Skip this candidate if there's an error
                 continue
-                
         return best_prompt
