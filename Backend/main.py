@@ -7,6 +7,7 @@ from fastapi import FastAPI, UploadFile, File, Form, Body
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 from processor import DocumentProcessor, sanitize_for_json
+from typing import List, Dict, Any
 
 load_dotenv()
 
@@ -234,8 +235,44 @@ async def save_prompt(
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+def _normalize_value(value: Any):
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip() == "":
+        return None
+    return value
+
+# === Documents listing (filename, file_type, created_at, user_prompt) ===
+@app.get("/documents/")
+async def list_documents():
+    try:
+        cur.execute("""
+            SELECT filename, file_type, created_at, user_prompt, client_name, language
+            FROM documents
+            ORDER BY datetime(created_at) DESC, id DESC
+        """)
+        rows = cur.fetchall()
+        documents: List[Dict[str, Any]] = []
+        for row in rows:
+            filename, file_type, created_at, user_prompt, client_name, language = row
+            documents.append({
+                "filename": _normalize_value(filename),
+                "file_type": _normalize_value(file_type),
+                "created_at": _normalize_value(created_at),
+                "user_prompt": _normalize_value(user_prompt),
+                "client_name": _normalize_value(client_name),
+                "language": _normalize_value(language),     
+            })
+        return {
+            "status": "success",
+            "total_processed": len(documents),
+            "documents": documents
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 if __name__ == "__main__":
     import uvicorn
     import os
-    port = int(os.environ.get("PORT", 10000))
+    port = int(os.environ.get("PORT", 8080))
     uvicorn.run(app, host="0.0.0.0", port=port)
