@@ -62,10 +62,10 @@ The backend will now be running at:
 
 ---
 
-## 📸 Preview
+---
+## 📸 Project Screenshot
 
-### Home Page
-![Home Page](DIP1.png)
-
-### Dashboard
-![Dashboard](DIP2.png)
+![Demo Screenshot](DIP1.png "Project Demo")
+![Demo Screenshot](DIP2.png "Project Demo")
+![Demo Screenshot](DIP3.png "Project Demo")
+![Demo Screenshot](demo4.jpeg "Project Demo")
