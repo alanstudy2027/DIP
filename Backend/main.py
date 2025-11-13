@@ -271,6 +271,16 @@ async def list_documents():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+# === Delete all documents from the database ===
+@app.delete("/delete-all-documents/")
+async def delete_all_documents():
+    try:
+        cur.execute("DELETE FROM documents")
+        conn.commit()
+        return {"status": "success", "message": "All documents have been deleted successfully."}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 if __name__ == "__main__":
     import uvicorn
     import os
