@@ -56,6 +56,7 @@ function PDFChatInterface() {
   const [outputJson, setOutputJson] = useState(null);
   const [outputFormat, setOutputFormat] = useState("json");
   const [xmlOutput, setXmlOutput] = useState("");
+  const [ociTokens, setOciTokens] = useState(null);
   const [inputPrompt, setInputPrompt] = useState("");
   const [suggestedPrompt, setSuggestedPrompt] = useState(null);
   const [documentId, setDocumentId] = useState(null);
@@ -174,6 +175,7 @@ function PDFChatInterface() {
       setOutputJson(null);
       setXmlOutput("");
       setOutputFormat("json");
+      setOciTokens(null);
 
       const formData = new FormData();
       formData.append("file", uploadedFile.current);
@@ -192,6 +194,11 @@ function PDFChatInterface() {
         const processedJson = convertEmptyStringsToNull(response.data.generated_json);
         setOutputJson(processedJson);
         setXmlOutput(jsonToXml(processedJson));
+        if (typeof response.data.oci_output_tokens === "number") {
+          setOciTokens(response.data.oci_output_tokens);
+        } else {
+          setOciTokens(null);
+        }
         
         setDocumentId(response.data.document_id);
 
@@ -225,6 +232,11 @@ function PDFChatInterface() {
       const processedJson = convertEmptyStringsToNull(res.data.generated_json);
       setOutputJson(processedJson);
       setXmlOutput(jsonToXml(processedJson));
+      if (typeof res.data.oci_output_tokens === "number") {
+        setOciTokens(res.data.oci_output_tokens);
+      } else {
+        setOciTokens(null);
+      }
     } catch (err) {
       showNotificationMessage("Try prompt failed: " + err.message, "error");
     } finally {
@@ -480,32 +492,42 @@ function PDFChatInterface() {
                     <Code2 className="w-5 h-5 mr-2 text-blue-400" />
                     Output
                   </h2>
-                  <div className="flex items-center rounded-full bg-slate-700/50 p-1 text-xs font-medium border border-slate-600/50">
-                    <button
-                      className={`px-3 py-1 rounded-full transition-colors flex items-center space-x-1 ${
-                        outputFormat === "json" 
-                          ? "bg-blue-500/20 text-blue-300 border border-blue-500/30" 
-                          : "text-slate-400 hover:text-slate-300"
-                      }`}
-                      onClick={() => setOutputFormat("json")}
-                    >
-                      <Code2 className="w-3 h-3" />
-                      <span>JSON</span>
-                    </button>
-                    <button
-                      className={`px-3 py-1 rounded-full transition-colors flex items-center space-x-1 ${
-                        outputFormat === "xml" 
-                          ? "bg-blue-500/20 text-blue-300 border border-blue-500/30" 
-                          : "text-slate-400 hover:text-slate-300"
-                      }`}
-                      onClick={() => setOutputFormat("xml")}
-                    >
-                      <FileText className="w-3 h-3" />
-                      <span>XML</span>
-                    </button>
+                  <div className="flex items-center space-x-3">
+                    
+                    <div className="flex items-center rounded-full bg-slate-700/50 p-1 text-xs font-medium border border-slate-600/50">
+                      <button
+                        className={`px-3 py-1 rounded-full transition-colors flex items-center space-x-1 ${
+                          outputFormat === "json" 
+                            ? "bg-blue-500/20 text-blue-300 border border-blue-500/30" 
+                            : "text-slate-400 hover:text-slate-300"
+                        }`}
+                        onClick={() => setOutputFormat("json")}
+                      >
+                        <Code2 className="w-3 h-3" />
+                        <span>JSON</span>
+                      </button>
+                      <button
+                        className={`px-3 py-1 rounded-full transition-colors flex items-center space-x-1 ${
+                          outputFormat === "xml" 
+                            ? "bg-blue-500/20 text-blue-300 border border-blue-500/30" 
+                            : "text-slate-400 hover:text-slate-300"
+                        }`}
+                        onClick={() => setOutputFormat("xml")}
+                      >
+                        <FileText className="w-3 h-3" />
+                        <span>XML</span>
+                      </button>
+                    </div>
                   </div>
+                  
                 </div>
-                
+                {ociTokens !== null && (
+                      <div className="px-3 py-1 my-4 rounded-full bg-slate-700/60 border border-slate-500/60 text-[11px] text-slate-200 flex items-center space-x-1">
+                        <Zap className="w-3 h-3 text-yellow-400" />
+                        <span className="uppercase tracking-wide">Output Tokens:</span>
+                        <span className="font-semibold text-slate-50">{ociTokens}</span>
+                      </div>
+                    )}
                 <div className="bg-slate-700/30 rounded-xl p-4 h-96 overflow-y-auto border border-slate-600/50">
                   {outputJson ? (
                     <pre className="text-slate-200 whitespace-pre-wrap text-sm font-mono animate-fade-in">

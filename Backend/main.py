@@ -77,7 +77,7 @@ async def process_document(file: UploadFile = File(...), schema_json: str = Form
         )
 
         # Use suggested prompt in extraction
-        generated_json = processor.extract_json_with_schema(
+        generated_json, output_tokens = processor.extract_json_with_schema(
             structured_markdown,
             schema,
             suggested_prompt
@@ -112,6 +112,7 @@ async def process_document(file: UploadFile = File(...), schema_json: str = Form
             "structured_markdown": structured_markdown,
             "generated_json": sanitize_for_json(generated_json),
             "suggested_prompt": suggested_prompt,
+            "oci_output_tokens": output_tokens,
         }
 
     except json.JSONDecodeError:
@@ -153,7 +154,7 @@ async def process_document(file: UploadFile = File(...), schema_json: str = Form
         )
 
         # Use suggested prompt in extraction
-        generated_json = processor.extract_json_with_schema(
+        generated_json, output_tokens = processor.extract_json_with_schema(
             structured_markdown,
             schema,
             suggested_prompt
@@ -187,6 +188,7 @@ async def process_document(file: UploadFile = File(...), schema_json: str = Form
             "structured_markdown": structured_markdown,
             "extracted_data": sanitize_for_json(generated_json),
             "suggested_prompt": suggested_prompt,
+            "oci_output_tokens": output_tokens,
         }
 
     except json.JSONDecodeError:
@@ -210,13 +212,17 @@ async def try_prompt(
         Extract data into JSON with this schema:
         {json.dumps(schema, indent=2)}
         """
-        raw_json = processor._call_oci_llm(custom_prompt)
+        raw_json, output_tokens = processor._call_oci_llm(custom_prompt)
         try:
             parsed_json = json.loads(raw_json)
         except:
             parsed_json = {"error": "Failed to parse JSON", "raw": raw_json}
 
-        return {"status": "success", "generated_json": sanitize_for_json(parsed_json)}
+        return {
+            "status": "success",
+            "generated_json": sanitize_for_json(parsed_json),
+            "oci_output_tokens": output_tokens,
+        }
 
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -280,6 +286,7 @@ async def delete_all_documents():
         return {"status": "success", "message": "All documents have been deleted successfully."}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
 
 if __name__ == "__main__":
     import uvicorn

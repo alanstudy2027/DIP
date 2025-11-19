@@ -5,7 +5,12 @@ import math
 from pathlib import Path
 from typing import Dict, Any, Tuple
 import oci
-from docling.document_converter import DocumentConverter
+from docling.datamodel.base_models import InputFormat
+from docling.datamodel.pipeline_options import (
+    PdfPipelineOptions,
+    TesseractCliOcrOptions,
+)
+from docling.document_converter import DocumentConverter, PdfFormatOption
 
 
 def sanitize_for_json(data):
@@ -55,24 +60,41 @@ class DocumentProcessor:
         )
 
         # Docling converter
-        self.converter = DocumentConverter()
+        ocr_options = TesseractCliOcrOptions(lang=["auto"])
+
+        pipeline_options = PdfPipelineOptions(
+            do_ocr=True,
+            force_full_page_ocr=True,
+            ocr_options=ocr_options,
+        )
+
+        self.converter = DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(
+                    pipeline_options=pipeline_options
+                )
+            }
+        )
 
     def extract_with_docling(self, file_path: str) -> Tuple[str, Dict[str, Any]]:
         """
         Convert file → Markdown and return raw markdown + basic metadata.
         """
         try:
-            conv_result = self.converter.convert(file_path)
-            markdown = conv_result.document.export_to_markdown()
+            conv = self.converter.convert(file_path)
+            markdown = conv.document.export_to_markdown()
+
             metadata = {
-                "language": getattr(conv_result, "language", "Unknown"),
+                "language": getattr(conv, "language", "auto")
             }
             return markdown, metadata
+
         except Exception as e:
             raise RuntimeError(f"Docling extraction failed: {e}")
 
-    def _call_oci_llm(self, prompt: str) -> str:
-        """Call OCI Generative AI with a text prompt and return response text."""
+
+    def _call_oci_llm(self, prompt: str) -> Tuple[str, int | None]:
+        """Call OCI Generative AI with a text prompt and return response text plus output tokens."""
         content = oci.generative_ai_inference.models.TextContent()
         content.text = prompt
         message = oci.generative_ai_inference.models.Message()
@@ -96,12 +118,45 @@ class DocumentProcessor:
 
         response = self.client.chat(chat_detail)
 
+        output_tokens = None
+        usage = getattr(getattr(response.data, "chat_response", None), "usage", None)
+        if usage is not None:
+            possible_fields = [
+                "output_tokens",
+                "output_token_count",
+                "completion_tokens",
+                "outputTokenCount",
+                "outputTokens",
+            ]
+            for field in possible_fields:
+                if hasattr(usage, field):
+                    output_tokens = getattr(usage, field)
+                    break
+
+        if output_tokens is None and hasattr(response, "headers"):
+            header_keys = [
+                "opc-billed-output-tokens",
+                "opc-output-token-count",
+                "opc-output-tokens",
+            ]
+            for key in header_keys:
+                header_value = response.headers.get(key)
+                if header_value is not None:
+                    output_tokens = header_value
+                    break
+
+        if output_tokens is not None:
+            try:
+                output_tokens = int(output_tokens)
+            except (TypeError, ValueError):
+                output_tokens = None
+
         if hasattr(response.data, "chat_response") and response.data.chat_response.choices:
             choice = response.data.chat_response.choices[0]
             if choice.message.content:
                 for item in choice.message.content:
                     if hasattr(item, "text") and item.text.strip():
-                        return item.text.strip()
+                        return item.text.strip(), output_tokens
         raise RuntimeError("No valid response from OCI LLM")
 
     def process_document(self, file_path: str) -> Dict[str, Any]:
@@ -131,7 +186,7 @@ class DocumentProcessor:
         Filename: {filename}
         Content: {markdown}
         """
-        raw_meta = self._call_oci_llm(meta_prompt)
+        raw_meta, _ = self._call_oci_llm(meta_prompt)
 
         try:
             meta_json = json.loads(raw_meta)
@@ -287,7 +342,7 @@ class DocumentProcessor:
     If you cannot find a value for a field, leave it as an empty string.
     """
 
-        raw_json = self._call_oci_llm(schema_prompt)
+        raw_json, output_tokens = self._call_oci_llm(schema_prompt)
 
         try:
             # Clean the response to ensure it's valid JSON
@@ -303,9 +358,9 @@ class DocumentProcessor:
                 if key not in parsed_json:
                     parsed_json[key] = ""
                     
-            return parsed_json
+            return parsed_json, output_tokens
         except Exception as e:
-            return {"error": f"Failed to parse JSON: {str(e)}", "raw": raw_json}
+            return {"error": f"Failed to parse JSON: {str(e)}", "raw": raw_json}, output_tokens
 
     def find_suggested_prompt(self, current_client: str, current_layout: str, cursor) -> str:
         """
@@ -353,7 +408,7 @@ class DocumentProcessor:
                 Similarity score (0-100):
                 """
                 
-                score_text = self._call_oci_llm(comparison_prompt)
+                score_text, _ = self._call_oci_llm(comparison_prompt)
                 
                 # Extract numeric score
                 import re
