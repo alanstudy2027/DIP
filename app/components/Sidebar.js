@@ -7,7 +7,9 @@ import {
   LayoutDashboard, 
   Zap,
   ChevronRight,
-  FileText
+  FileText,
+  GitBranch,
+  History
 } from "lucide-react";
 
 const navItems = [
@@ -15,13 +17,19 @@ const navItems = [
     name: "Home", 
     href: "/", 
     icon: Home,
-    description: "Welcome overview"
+    description: "Document processing"
   },
   { 
     name: "Dashboard", 
     href: "/dashboard", 
     icon: LayoutDashboard,
     description: "Document analytics"
+  },
+  { 
+    name: "Version Control", 
+    href: "/version", 
+    icon: GitBranch,
+    description: "Prompt history & versions"
   },
 ];
 
@@ -66,7 +74,7 @@ export default function Sidebar() {
         }
       `}</style>
 
-      <aside className="hidden md:flex md:flex-col w-64 bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 border-r border-slate-700/50 shadow-2xl md:fixed md:top-0 md:bottom-0 md:left-0 z-50 overflow-hidden">
+      <aside className="hidden md:flex md:flex-col w-67 bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 border-r border-slate-700/50 shadow-2xl md:fixed md:top-0 md:bottom-0 md:left-0 z-50 overflow-hidden">
         {/* Background Pattern */}
         <div className="absolute inset-0 opacity-5">
           <div className="absolute inset-0 bg-gradient-to-br from-blue-500/10 to-purple-500/10"></div>
@@ -83,7 +91,7 @@ export default function Sidebar() {
             </div>
             <div className="flex-1 min-w-0">
               <h1 className="text-xl font-bold bg-gradient-to-r from-white to-slate-200 bg-clip-text text-transparent tracking-tight">
-              Document Intelligence
+                Doc Intelligence
               </h1>
               <p className="text-sm text-slate-400 mt-1">AI Document Suite</p>
             </div>
