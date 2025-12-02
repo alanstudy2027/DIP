@@ -80,8 +80,28 @@ class DocumentProcessor:
         """
         Convert file → Markdown and return raw markdown + basic metadata.
         """
+        import time
+        from datetime import datetime
+
         try:
+            # Start timing
+            start_time = time.time()
+            start_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            print(f"\n{'='*80}")
+            print(f"[DOCLING START] {start_timestamp}")
+            print(f"Processing file: {file_path}")
+            print(f"{'='*80}\n")
+
             conv = self.converter.convert(file_path)
+
+            # End timing for Docling conversion
+            docling_time = time.time() - start_time
+            docling_end_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            print(f"\n{'='*80}")
+            print(f"[DOCLING COMPLETE] {docling_end_timestamp}")
+            print(f"Duration: {docling_time:.2f} seconds")
+            print(f"{'='*80}\n")
+
             markdown = conv.document.export_to_markdown()
 
             metadata = {
@@ -95,69 +115,58 @@ class DocumentProcessor:
 
     def _call_oci_llm(self, prompt: str) -> Tuple[str, int | None]:
         """Call OCI Generative AI with a text prompt and return response text plus output tokens."""
+        import time
+        from datetime import datetime
+        
+        # Start timing
+        start_time = time.time()
+        start_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        print(f"\n[OCI API START] {start_timestamp}")
+        print(f"Prompt length: {len(prompt)} characters")
+        
         content = oci.generative_ai_inference.models.TextContent()
         content.text = prompt
         message = oci.generative_ai_inference.models.Message()
         message.role = "USER"
         message.content = [content]
 
-        chat_request = oci.generative_ai_inference.models.GenericChatRequest()
-        chat_request.api_format = oci.generative_ai_inference.models.BaseChatRequest.API_FORMAT_GENERIC
-        chat_request.messages = [message]
-        chat_request.max_tokens = 2000
-        chat_request.temperature = 0
-        chat_request.top_p = 1
+        chat_request = oci.generative_ai_inference.models.CohereChatRequest()
+        chat_request.message = message.content[0].text
+        chat_request.max_tokens = 4000
+        chat_request.temperature = 0.1
+        chat_request.frequency_penalty = 0
+        chat_request.top_p = 0.75
         chat_request.top_k = 0
 
         chat_detail = oci.generative_ai_inference.models.ChatDetails()
         chat_detail.serving_mode = oci.generative_ai_inference.models.OnDemandServingMode(
-            model_id="ocid1.generativeaimodel.oc1.us-chicago-1.amaaaaaask7dceya3bsfz4ogiuv3yc7gcnlry7gi3zzx6tnikg6jltqszm2q"
+            model_id="cohere.command-r-plus-08-2024"
         )
         chat_detail.chat_request = chat_request
         chat_detail.compartment_id = self.compartment_id
 
-        response = self.client.chat(chat_detail)
-
+        chat_response = self.client.chat(chat_detail)
+        
+        # End timing
+        api_time = time.time() - start_time
+        end_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        
+        # Extract output tokens
         output_tokens = None
-        usage = getattr(getattr(response.data, "chat_response", None), "usage", None)
-        if usage is not None:
-            possible_fields = [
-                "output_tokens",
-                "output_token_count",
-                "completion_tokens",
-                "outputTokenCount",
-                "outputTokens",
-            ]
-            for field in possible_fields:
-                if hasattr(usage, field):
-                    output_tokens = getattr(usage, field)
-                    break
+        if hasattr(chat_response.data, 'chat_response') and hasattr(chat_response.data.chat_response, 'meta'):
+            meta = chat_response.data.chat_response.meta
+            if hasattr(meta, 'tokens') and hasattr(meta.tokens, 'output_tokens'):
+                output_tokens = meta.tokens.output_tokens
+        
+        # Print timing summary
+        response_text = chat_response.data.chat_response.text
+        print(f"[OCI API COMPLETE] {end_timestamp}")
+        print(f"Duration: {api_time:.2f} seconds")
+        if output_tokens:
+            print(f"Output tokens: {output_tokens}")
+        print(f"Response length: {len(response_text)} characters\n")
 
-        if output_tokens is None and hasattr(response, "headers"):
-            header_keys = [
-                "opc-billed-output-tokens",
-                "opc-output-token-count",
-                "opc-output-tokens",
-            ]
-            for key in header_keys:
-                header_value = response.headers.get(key)
-                if header_value is not None:
-                    output_tokens = header_value
-                    break
-
-        if output_tokens is not None:
-            try:
-                output_tokens = int(output_tokens)
-            except (TypeError, ValueError):
-                output_tokens = None
-
-        if hasattr(response.data, "chat_response") and response.data.chat_response.choices:
-            choice = response.data.chat_response.choices[0]
-            if choice.message.content:
-                for item in choice.message.content:
-                    if hasattr(item, "text") and item.text.strip():
-                        return item.text.strip(), output_tokens
-        raise RuntimeError("No valid response from OCI LLM")
+        return response_text, output_tokens
 
     def process_document(self, file_path: str) -> Dict[str, Any]:
         """
@@ -166,17 +175,37 @@ class DocumentProcessor:
         3. LLM → Extract language, client_name, layout
         4. Return markdown + metadata
         """
+        import time
+        from datetime import datetime
+        
+        # Overall timing
+        overall_start = time.time()
+        overall_start_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        print(f"\n{'#'*80}")
+        print(f"# DOCUMENT PROCESSING START: {overall_start_timestamp}")
+        print(f"# File: {file_path}")
+        print(f"{'#'*80}\n")
+        
+        # Phase 1: Docling conversion
+        phase1_start = time.time()
+        print(f"[PHASE 1] Starting Docling conversion...")
         markdown, doc_metadata = self.extract_with_docling(file_path)
-        filename = os.path.basename(file_path)
-
-        # Extract file type using regex
+        phase1_time = time.time() - phase1_start
+        print(f"[PHASE 1 COMPLETE] Docling conversion: {phase1_time:.2f}s\n")
+        
+        # Phase 2: File type extraction
+        phase2_start = time.time()
+        print(f"[PHASE 2] Extracting file type...")
+        filename = Path(file_path).name
         file_type = get_file_type(filename)
-
-        # LLM prompt to extract metadata
+        phase2_time = time.time() - phase2_start
+        print(f"[PHASE 2 COMPLETE] File type extraction: {phase2_time:.3f}s\n")
+        
+        # Phase 3: Metadata extraction via LLM
+        phase3_start = time.time()
+        print(f"[PHASE 3] Extracting metadata (language, client, layout) via LLM...")
         meta_prompt = f"""
-        You are a metadata extractor.
-        From the following document filename and content, return ONLY a JSON object:
-
+        Extract metadata from this document and return ONLY a JSON object with this structure:
         {{
           "language": "<document language>",
           "client_name": "<company name or client name>",
@@ -187,6 +216,8 @@ class DocumentProcessor:
         Content: {markdown}
         """
         raw_meta, _ = self._call_oci_llm(meta_prompt)
+        phase3_time = time.time() - phase3_start
+        print(f"[PHASE 3 COMPLETE] Metadata extraction: {phase3_time:.2f}s\n")
 
         try:
             meta_json = json.loads(raw_meta)
@@ -203,6 +234,18 @@ class DocumentProcessor:
             "layout": meta_json.get("layout", []),
             "client_name": meta_json.get("client_name", re.sub(r"\..*$", "", filename)),
         }
+        
+        # Overall summary
+        overall_time = time.time() - overall_start
+        overall_end_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        print(f"\n{'#'*80}")
+        print(f"# DOCUMENT PROCESSING COMPLETE: {overall_end_timestamp}")
+        print(f"# Total Duration: {overall_time:.2f}s")
+        print(f"# Breakdown:")
+        print(f"#   - Docling Conversion: {phase1_time:.2f}s ({phase1_time/overall_time*100:.1f}%)")
+        print(f"#   - File Type: {phase2_time:.3f}s ({phase2_time/overall_time*100:.1f}%)")
+        print(f"#   - Metadata Extraction: {phase3_time:.2f}s ({phase3_time/overall_time*100:.1f}%)")
+        print(f"{'#'*80}\n")
 
         return {
             "structured_markdown": markdown,
