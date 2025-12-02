@@ -423,3 +423,181 @@ class DocumentProcessor:
                 # Skip this candidate if there's an error
                 continue
         return best_prompt
+
+    def get_document_versions(self, document_id: int, cursor) -> list:
+        """
+        Get version history for a document.
+        Returns a list of version objects with version number, type, prompt, and timestamp.
+        
+        Version logic:
+        - Version 0: System prompt only (user_prompt is NULL)
+        - Version 1+: User prompts stored as JSON array in user_prompt column
+        """
+        cursor.execute(
+            "SELECT user_prompt, created_at FROM documents WHERE id = ?",
+            (document_id,)
+        )
+        row = cursor.fetchone()
+        
+        if not row:
+            return []
+        
+        user_prompt_data, created_at = row
+        versions = []
+        
+        # Version 0: System prompt only
+        versions.append({
+            "version": 0,
+            "type": "system",
+            "prompt": None,  # System prompt is implicit
+            "timestamp": created_at
+        })
+        
+        # Parse user prompts if they exist
+        if user_prompt_data:
+            try:
+                prompt_history = json.loads(user_prompt_data)
+                if isinstance(prompt_history, list):
+                    for idx, prompt_entry in enumerate(prompt_history):
+                        versions.append({
+                            "version": idx + 1,
+                            "type": "user",
+                            "prompt": prompt_entry.get("prompt", ""),
+                            "timestamp": prompt_entry.get("timestamp", created_at)
+                        })
+                else:
+                    # Legacy format: single prompt string
+                    versions.append({
+                        "version": 1,
+                        "type": "user",
+                        "prompt": user_prompt_data,
+                        "timestamp": created_at
+                    })
+            except json.JSONDecodeError:
+                # Legacy format: single prompt string
+                versions.append({
+                    "version": 1,
+                    "type": "user",
+                    "prompt": user_prompt_data,
+                    "timestamp": created_at
+                })
+        
+        return versions
+
+    def get_latest_prompt_for_layout(self, layout: str, cursor) -> dict:
+        """
+        Get the latest user prompt for documents with the same layout.
+        Returns the prompt history (as JSON) or None if no prompts exist.
+        """
+        cursor.execute(
+            "SELECT user_prompt FROM documents WHERE layout = ? AND user_prompt IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+            (layout,)
+        )
+        row = cursor.fetchone()
+        
+        if row and row[0]:
+            try:
+                return json.loads(row[0])
+            except json.JSONDecodeError:
+                # Legacy format: return as single-item array
+                return [{"prompt": row[0], "timestamp": None}]
+        
+        return None
+
+    def update_prompt_for_layout(self, layout: str, new_prompt: str, cursor, conn) -> int:
+        """
+        Add a new version to all documents with the same layout.
+        Returns the number of documents updated.
+        """
+        import datetime
+        
+        # Get all documents with this layout
+        cursor.execute(
+            "SELECT id, user_prompt FROM documents WHERE layout = ?",
+            (layout,)
+        )
+        documents = cursor.fetchall()
+        
+        updated_count = 0
+        timestamp = datetime.datetime.now().isoformat()
+        
+        for doc_id, current_prompt_data in documents:
+            # Parse existing prompt history
+            prompt_history = []
+            if current_prompt_data:
+                try:
+                    parsed = json.loads(current_prompt_data)
+                    if isinstance(parsed, list):
+                        prompt_history = parsed
+                    else:
+                        # Legacy format: convert to new format
+                        prompt_history = [{"prompt": current_prompt_data, "timestamp": None}]
+                except json.JSONDecodeError:
+                    # Legacy format: convert to new format
+                    prompt_history = [{"prompt": current_prompt_data, "timestamp": None}]
+            
+            # Add new version
+            prompt_history.append({
+                "prompt": new_prompt,
+                "timestamp": timestamp
+            })
+            
+            # Update document
+            cursor.execute(
+                "UPDATE documents SET user_prompt = ? WHERE id = ?",
+                (json.dumps(prompt_history), doc_id)
+            )
+            updated_count += 1
+        
+        conn.commit()
+        return updated_count
+
+    def update_specific_version(self, document_id: int, version: int, new_prompt: str, cursor, conn) -> bool:
+        """
+        Update a specific version's prompt text for a single document.
+        Version 0 cannot be edited (system prompt).
+        Returns True if successful, False otherwise.
+        """
+        if version == 0:
+            return False  # Cannot edit system prompt
+        
+        cursor.execute(
+            "SELECT user_prompt FROM documents WHERE id = ?",
+            (document_id,)
+        )
+        row = cursor.fetchone()
+        
+        if not row:
+            return False
+        
+        user_prompt_data = row[0]
+        
+        if not user_prompt_data:
+            return False  # No user prompts to edit
+        
+        try:
+            prompt_history = json.loads(user_prompt_data)
+            if not isinstance(prompt_history, list):
+                # Legacy format
+                if version == 1:
+                    prompt_history = [{"prompt": new_prompt, "timestamp": None}]
+                else:
+                    return False
+            else:
+                # Update the specific version (version 1 = index 0)
+                version_index = version - 1
+                if 0 <= version_index < len(prompt_history):
+                    prompt_history[version_index]["prompt"] = new_prompt
+                else:
+                    return False
+            
+            # Save updated history
+            cursor.execute(
+                "UPDATE documents SET user_prompt = ? WHERE id = ?",
+                (json.dumps(prompt_history), document_id)
+            )
+            conn.commit()
+            return True
+            
+        except (json.JSONDecodeError, IndexError, KeyError):
+            return False

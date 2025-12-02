@@ -202,8 +202,20 @@ function PDFChatInterface() {
         
         setDocumentId(response.data.document_id);
 
+        // Parse suggested prompt - keep all prompts for display
         if (response.data.suggested_prompt) {
-          setSuggestedPrompt(response.data.suggested_prompt);
+          let promptData = response.data.suggested_prompt;
+          
+          // If it's a JSON array string, parse it
+          if (typeof promptData === 'string' && promptData.trim().startsWith('[')) {
+            try {
+              promptData = JSON.parse(promptData);
+            } catch (e) {
+              console.log('Could not parse suggested prompt:', e);
+            }
+          }
+          
+          setSuggestedPrompt(promptData);
         }
         
         showNotificationMessage("File processed successfully!");
@@ -283,13 +295,14 @@ function PDFChatInterface() {
       
       <div className="max-w-7xl mx-auto relative z-10">
         {/* Header */}
-        <div className="text-center mb-10 transform transition-all duration-500">
-          <h1 className="text-5xl font-bold bg-gradient-to-r from-white to-slate-200 bg-clip-text text-transparent mb-3 animate-fade-in-down">
+        <div className="text mb-10 transform transition-all duration-500">
+          <h1 className="text-4xl font-bold bg-gradient-to-r from-white to-slate-200 bg-clip-text text-transparent mb-3 ">
             Document Intelligence Platform
           </h1>
-          <p className="text-slate-400 text-lg animate-fade-in-up">
+          <p className="text-slate-400 text-lg">
             Upload, analyze, and extract structured data from documents with AI-powered precision
           </p>
+          <hr className="my-6 border-slate-700/50" />
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -439,9 +452,19 @@ function PDFChatInterface() {
                 
                 {suggestedPrompt && (
                   <div className="mb-4 p-3 bg-blue-500/20 rounded-lg border border-blue-500/30 animate-fade-in">
-                    <p className="text-sm text-blue-300">
-                      <span className="font-semibold">Suggested Prompt:</span> {suggestedPrompt}
-                    </p>
+                    <p className="text-sm font-semibold text-blue-300 mb-2">Suggested Prompts:</p>
+                    {Array.isArray(suggestedPrompt) ? (
+                      <div className="space-y-2">
+                        {suggestedPrompt.map((item, index) => (
+                          <div key={index} className="flex items-start space-x-2 text-sm">
+                            <span className="text-blue-400 font-semibold min-w-[20px]">v{index + 1}:</span>
+                            <span className="text-blue-200">{item.prompt}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-blue-200">{suggestedPrompt}</p>
+                    )}
                   </div>
                 )}
                 

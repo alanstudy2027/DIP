@@ -24,72 +24,6 @@ import {
   FileUp
 } from 'lucide-react';
 
-// Simulated data for version control
-const generateMockDocuments = () => {
-  const clients = ['Acme Corp', 'Globex Inc', 'Stark Industries', 'Wayne Enterprises', 'Oscorp'];
-  const fileTypes = ['PDF', 'DOCX', 'XLSX'];
-  const languages = ['English', 'Spanish', 'French', 'German', 'Chinese'];
-  
-  const systemPrompts = [
-    "Extract all invoice details including vendor, date, amount, and line items.",
-    "Identify key contract clauses and important dates.",
-    "Extract customer information and order details.",
-    "Parse financial statements and extract balance sheet data.",
-    "Extract shipping details and delivery information."
-  ];
-  
-  const userPrompts = [
-    "Focus on extracting only the pricing information and ignore other details.",
-    "Please extract the termination clauses and renewal terms specifically.",
-    "I need the customer's contact information and order total only.",
-    "Extract assets and liabilities sections separately with their subcategories.",
-    "Get the tracking numbers and estimated delivery dates."
-  ];
-
-  const documents = [];
-  
-  for (let i = 1; i <= 12; i++) {
-    const client = clients[Math.floor(Math.random() * clients.length)];
-    const hasUserPrompt = Math.random() > 0.3;
-    const versions = [];
-    
-    // Version 0 - System prompt only
-    versions.push({
-      version: 0,
-      prompt: systemPrompts[Math.floor(Math.random() * systemPrompts.length)],
-      type: 'system',
-      timestamp: new Date(Date.now() - Math.random() * 30 * 24 * 60 * 60 * 1000).toISOString(),
-    });
-    
-    // Add user prompt versions
-    if (hasUserPrompt) {
-      const versionCount = Math.floor(Math.random() * 3) + 1; // 1-3 user prompt versions
-      
-      for (let v = 1; v <= versionCount; v++) {
-        versions.push({
-          version: v,
-          prompt: userPrompts[Math.floor(Math.random() * userPrompts.length)],
-          type: 'user',
-          timestamp: new Date(Date.now() - Math.random() * v * 7 * 24 * 60 * 60 * 1000).toISOString(),
-        });
-      }
-    }
-    
-    documents.push({
-      id: `doc-${i}`,
-      filename: `document_${i}.${fileTypes[Math.floor(Math.random() * fileTypes.length)].toLowerCase()}`,
-      file_type: fileTypes[Math.floor(Math.random() * fileTypes.length)],
-      client_name: client,
-      language: languages[Math.floor(Math.random() * languages.length)],
-      created_at: new Date(Date.now() - Math.random() * 90 * 24 * 60 * 60 * 1000).toISOString(),
-      versions: versions,
-      current_version: versions.length - 1,
-    });
-  }
-  
-  return documents;
-};
-
 function VersionBadge({ version, isCurrent }) {
   return (
     <div className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium border ${
@@ -512,10 +446,33 @@ export default function VersionControlPage() {
     versionFilter: 'all',
     sortBy: 'newest'
   });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  // Initialize with mock data
+  // Fetch documents from backend
+  const fetchDocuments = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      const response = await fetch('http://localhost:8080/documents-with-versions/');
+      const data = await response.json();
+      
+      if (data.status === 'success') {
+        setDocuments(data.documents);
+      } else {
+        setError(data.message || 'Failed to fetch documents');
+      }
+    } catch (err) {
+      setError('Failed to connect to backend. Make sure the server is running.');
+      console.error('Error fetching documents:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Initialize with real data from backend
   useEffect(() => {
-    setDocuments(generateMockDocuments());
+    fetchDocuments();
   }, []);
 
   // Filter and sort documents
@@ -547,16 +504,39 @@ export default function VersionControlPage() {
     }
   });
 
-  const handleUpdatePrompt = (docId, version, newPrompt) => {
-    setDocuments(prev => prev.map(doc => {
-      if (doc.id === docId) {
-        const updatedVersions = doc.versions.map(v => 
-          v.version === version ? { ...v, prompt: newPrompt } : v
-        );
-        return { ...doc, versions: updatedVersions };
+  const handleUpdatePrompt = async (docId, version, newPrompt) => {
+    try {
+      // Extract numeric ID from 'doc-{id}' format
+      const numericId = parseInt(docId.replace('doc-', ''));
+      
+      const response = await fetch(`http://localhost:8080/document/${numericId}/version/${version}/`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(newPrompt),
+      });
+      
+      const data = await response.json();
+      
+      if (data.status === 'success') {
+        // Refresh documents to get updated data
+        await fetchDocuments();
+        
+        // Update selected document if it's the one being edited
+        if (selectedDocument && selectedDocument.id === docId) {
+          const updatedDoc = documents.find(doc => doc.id === docId);
+          if (updatedDoc) {
+            setSelectedDocument(updatedDoc);
+          }
+        }
+      } else {
+        throw new Error(data.message || 'Failed to update prompt');
       }
-      return doc;
-    }));
+    } catch (error) {
+      console.error('Error updating prompt:', error);
+      throw error; // Re-throw to let the modal handle the error
+    }
   };
 
   return (
@@ -649,7 +629,35 @@ export default function VersionControlPage() {
             </div>
           </div>
 
-          {filteredDocuments.length === 0 ? (
+          {loading ? (
+            <div className="text-center py-16">
+              <div className="w-16 h-16 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+              <h3 className="text-lg font-medium text-white mb-2">
+                Loading documents...
+              </h3>
+              <p className="text-slate-400">
+                Fetching version history from backend
+              </p>
+            </div>
+          ) : error ? (
+            <div className="text-center py-16">
+              <div className="w-20 h-20 bg-red-500/20 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-red-500/50">
+                <AlertCircle className="w-10 h-10 text-red-400" />
+              </div>
+              <h3 className="text-lg font-medium text-white mb-2">
+                Error loading documents
+              </h3>
+              <p className="text-slate-400 mb-4">
+                {error}
+              </p>
+              <button
+                onClick={fetchDocuments}
+                className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors duration-200"
+              >
+                Retry
+              </button>
+            </div>
+          ) : filteredDocuments.length === 0 ? (
             <div className="text-center py-16">
               <div className="w-20 h-20 bg-slate-700/50 rounded-2xl flex items-center justify-center mx-auto mb-4 border border-slate-600/50">
                 <FileUp className="w-10 h-10 text-slate-400" />

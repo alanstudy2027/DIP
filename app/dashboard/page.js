@@ -187,11 +187,39 @@ function DocumentDetails({ document, isOpen, onClose }) {
               <span>User Prompt</span>
             </label>
             <div className="bg-slate-700/50 p-4 rounded-lg border border-slate-600/50">
-              <p className="text-white whitespace-pre-wrap">
-                {document.user_prompt || (
-                  <span className="text-slate-400 italic">NULL</span>
-                )}
-              </p>
+              {(() => {
+                if (!document.user_prompt) {
+                  return <span className="text-slate-400 italic">NULL</span>;
+                }
+                
+                // Try to parse as JSON array
+                let prompts = null;
+                try {
+                  if (typeof document.user_prompt === 'string' && document.user_prompt.trim().startsWith('[')) {
+                    prompts = JSON.parse(document.user_prompt);
+                  } else if (Array.isArray(document.user_prompt)) {
+                    prompts = document.user_prompt;
+                  }
+                } catch (e) {
+                  // If parsing fails, display as plain text
+                }
+                
+                if (Array.isArray(prompts) && prompts.length > 0) {
+                  return (
+                    <div className="space-y-3">
+                      {prompts.map((item, index) => (
+                        <div key={index} className="flex items-start space-x-3 p-3 bg-slate-800/50 rounded-lg border border-slate-600/30">
+                          <span className="text-blue-400 font-semibold text-sm min-w-[30px]">v{index + 1}:</span>
+                          <p className="text-white text-sm flex-1">{item.prompt}</p>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                } else {
+                  // Display as plain text if not an array
+                  return <p className="text-white whitespace-pre-wrap">{document.user_prompt}</p>;
+                }
+              })()}
             </div>
           </div>
         </div>

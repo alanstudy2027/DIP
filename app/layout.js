@@ -22,23 +22,9 @@ export default function RootLayout({ children }) {
   return (
     <html lang="en">
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
-        <Sidebar />
-        <div className="bg-gray-50 flex flex-col md:ml-63 h-screen">
-            <header className="md:hidden bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between">
-              <Link href="/" className="text-lg font-semibold text-blue-600">
-              Document Intelligence Platform
-              </Link>
-              <nav className="flex items-center gap-3 text-sm font-medium text-gray-600">
-                <Link href="/" className="hover:text-blue-600">
-                  Home
-                </Link>
-                <Link href="/dashboard" className="hover:text-blue-600">
-                  Dashboard
-                </Link>
-              </nav>
-            </header>
-            <main className="flex-1 overflow-y-auto overflow-x-hidden">{children}</main>
-        </div>
+        <Sidebar>
+          {children}
+        </Sidebar>
       </body>
     </html>
   );
